@@ -30,7 +30,7 @@ services:
 
   # --- Schema Registry (Karapace - open source) ---
   schema-registry:
-    image: ghcr.io/aiven-open/karapace:4.3.0
+    image: ghcr.io/aiven/karapace:latest
     container_name: schema-registry
     depends_on:
       kafka:
@@ -41,12 +41,10 @@ services:
       KARAPACE_BOOTSTRAP_URI: "kafka:29092"
       KARAPACE_PORT: 8081
       KARAPACE_HOST: 0.0.0.0
-      KARAPACE_REGISTRY_HOST: 0.0.0.0
       KARAPACE_ADVERTISED_HOSTNAME: schema-registry
       KARAPACE_LOG_LEVEL: WARNING
       KARAPACE_COMPATIBILITY: BACKWARD
-    command: >
-      /bin/bash -c "karapace_schema_registry karapace.config.json"
+    command: ["./start.sh", "registry"]
 
   # --- Elasticsearch ---
   elasticsearch:
@@ -96,4 +94,3 @@ services:
 volumes:
   kafka-data:
   es-data:
-
