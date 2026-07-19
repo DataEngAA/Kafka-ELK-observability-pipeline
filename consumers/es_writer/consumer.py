@@ -1,12 +1,11 @@
 """
-Phase 1 consumer (thin slice): reads events from the recalls-raw Kafka
-topic and writes them to Elasticsearch.
+Phase 2 consumer: reads Avro-serialized events from the recalls-raw Kafka
+topic (deserializing via the schema registry) and writes them to
+Elasticsearch.
 
 Idempotency: the Elasticsearch document ID is a deterministic SHA-256 hash
-of (source + record_id), so re-processing the same message (e.g. after a
-consumer restart) overwrites the same document instead of creating a
-duplicate. This is the idempotent-consumer pattern documented in
-docs/Architecture.md section 6, chosen over true exactly-once semantics.
+of (source + record_id), so re-processing the same message overwrites the
+same document instead of creating a duplicate.
 
 Offsets are committed only AFTER a successful write, per docs/Rules.md.
 """
@@ -17,7 +16,10 @@ import logging
 import sys
 
 import httpx
-from confluent_kafka import Consumer, KafkaError
+from confluent_kafka import DeserializingConsumer, KafkaError
+from confluent_kafka.schema_registry import SchemaRegistryClient
+from confluent_kafka.schema_registry.avro import AvroDeserializer
+from confluent_kafka.serialization import StringDeserializer
 
 logging.basicConfig(
     level=logging.INFO,
@@ -28,6 +30,7 @@ log = logging.getLogger(__name__)
 KAFKA_BOOTSTRAP_SERVERS = "localhost:9092"
 KAFKA_TOPIC = "recalls-raw"
 KAFKA_GROUP_ID = "es-writer-recalls"
+SCHEMA_REGISTRY_URL = "http://localhost:8081"
 
 ELASTICSEARCH_URL = "http://localhost:9200"
 ELASTICSEARCH_INDEX = "recalls-events"
@@ -44,8 +47,17 @@ def write_to_elasticsearch(event: dict) -> bool:
     doc_id = deterministic_doc_id(event["source"], event["record_id"])
     url = f"{ELASTICSEARCH_URL}/{ELASTICSEARCH_INDEX}/_doc/{doc_id}"
 
+    # Expand payload_json back into a nested object so it's queryable in ES,
+    # rather than sitting there as an opaque string.
+    es_document = dict(event)
     try:
-        response = httpx.put(url, json=event, timeout=15.0)
+        es_document["payload"] = json.loads(event["payload_json"])
+        del es_document["payload_json"]
+    except (json.JSONDecodeError, TypeError):
+        log.warning("Could not parse payload_json for record_id=%s; storing raw.", event.get("record_id"))
+
+    try:
+        response = httpx.put(url, json=es_document, timeout=15.0)
         response.raise_for_status()
         return True
     except httpx.HTTPError as exc:
@@ -54,17 +66,23 @@ def write_to_elasticsearch(event: dict) -> bool:
 
 
 def main() -> int:
-    consumer = Consumer(
+    schema_registry_client = SchemaRegistryClient({"url": SCHEMA_REGISTRY_URL})
+    avro_deserializer = AvroDeserializer(schema_registry_client)
+    string_deserializer = StringDeserializer("utf_8")
+
+    consumer = DeserializingConsumer(
         {
             "bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS,
             "group.id": KAFKA_GROUP_ID,
+            "key.deserializer": string_deserializer,
+            "value.deserializer": avro_deserializer,
             "auto.offset.reset": "earliest",
             "enable.auto.commit": False,  # we commit manually after a successful write
         }
     )
     consumer.subscribe([KAFKA_TOPIC])
 
-    log.info("Consumer started. Listening on topic '%s'...", KAFKA_TOPIC)
+    log.info("Consumer started (Avro mode). Listening on topic '%s'...", KAFKA_TOPIC)
 
     try:
         while True:
@@ -78,11 +96,10 @@ def main() -> int:
                 log.error("Kafka error: %s", msg.error())
                 continue
 
-            try:
-                event = json.loads(msg.value())
-            except (json.JSONDecodeError, TypeError) as exc:
-                log.error("Skipping unparseable message at offset %s: %s", msg.offset(), exc)
-                consumer.commit(msg)  # don't retry a permanently broken message forever
+            event = msg.value()
+            if event is None:
+                log.warning("Skipping message with no deserializable value at offset %s", msg.offset())
+                consumer.commit(msg)
                 continue
 
             success = write_to_elasticsearch(event)

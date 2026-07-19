@@ -1,0 +1,13 @@
+{
+  "type": "record",
+  "name": "SourceEvent",
+  "namespace": "com.observabilitypipeline.recalls",
+  "doc": "Envelope for a single event from a public data source. The raw source record is kept as a JSON string in payload_json rather than fully modeled in Avro, because CPSC's record shape varies between recall types and is not worth tightly coupling to our schema. See docs/Architecture.md decision log.",
+  "fields": [
+    { "name": "source", "type": "string", "doc": "Which producer/source this event came from, e.g. cpsc_recalls" },
+    { "name": "record_id", "type": "string", "doc": "Source's own unique ID for this record" },
+    { "name": "event_type", "type": "string", "doc": "discovered | updated" },
+    { "name": "scraped_at", "type": "string", "doc": "ISO-8601 UTC timestamp of when we fetched this record" },
+    { "name": "payload_json", "type": "string", "doc": "The raw source record, JSON-encoded as a string" }
+  ]
+}

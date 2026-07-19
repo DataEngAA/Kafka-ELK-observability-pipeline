@@ -1,0 +1,14 @@
+{
+  "type": "record",
+  "name": "SourceEvent",
+  "namespace": "com.observabilitypipeline.recalls",
+  "doc": "v2: adds optional content_hash field for future dedup/change-detection use. Backward compatible with v1 — content_hash defaults to null, so v1 consumers reading v2 messages (or v2 consumers reading v1 messages) both work without error.",
+  "fields": [
+    { "name": "source", "type": "string", "doc": "Which producer/source this event came from, e.g. cpsc_recalls" },
+    { "name": "record_id", "type": "string", "doc": "Source's own unique ID for this record" },
+    { "name": "event_type", "type": "string", "doc": "discovered | updated" },
+    { "name": "scraped_at", "type": "string", "doc": "ISO-8601 UTC timestamp of when we fetched this record" },
+    { "name": "payload_json", "type": "string", "doc": "The raw source record, JSON-encoded as a string" },
+    { "name": "content_hash", "type": ["null", "string"], "default": null, "doc": "NEW in v2: optional SHA-256 hash of payload_json, for future change-detection. Defaults to null for compatibility with v1 messages/consumers." }
+  ]
+}

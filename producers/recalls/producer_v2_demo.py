@@ -1,14 +1,18 @@
 """
-Phase 2 producer: fetches recent product recalls from the CPSC public API
-and publishes each recall as an Avro-serialized message to Kafka, validated
-against the schema registry (Karapace).
+SCHEMA EVOLUTION DEMO — not part of the normal pipeline, run manually once
+to prove backward compatibility.
 
-This replaces Phase 1's raw-JSON version. The event envelope is strongly
-typed via Avro; the source's own record is kept as a JSON string inside
-payload_json rather than fully modeled (see schemas/cpsc_recalls/v1.avsc
-for why).
+Publishes a few records using the v2 schema (which adds an optional
+content_hash field) to the SAME topic as the v1 producer. The point: the
+existing, unmodified consumer.py (still pointed at v1 in spirit, but really
+just deserializing via the schema registry generically) should read these
+v2 messages without any code changes and without erroring — proving the
+schema change was truly backward compatible.
+
+See docs/Phases.md Phase 2 and schemas/cpsc_recalls/v2.avsc.
 """
 
+import hashlib
 import json
 import logging
 import sys
@@ -29,7 +33,7 @@ log = logging.getLogger(__name__)
 KAFKA_BOOTSTRAP_SERVERS = "localhost:9092"
 KAFKA_TOPIC = "recalls-raw"
 SCHEMA_REGISTRY_URL = "http://localhost:8081"
-SCHEMA_PATH = "schemas/cpsc_recalls/v1.avsc"
+SCHEMA_PATH = "schemas/cpsc_recalls/v2.avsc"
 
 CPSC_API_URL = "https://www.saferproducts.gov/RestWebServices/Recall"
 SOURCE_NAME = "cpsc_recalls"
@@ -65,12 +69,16 @@ def build_event(record: dict) -> dict | None:
         log.warning("Skipping record with no RecallID/RecallNumber: %s", record)
         return None
 
+    payload_json = json.dumps(record)
+    content_hash = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
+
     return {
         "source": SOURCE_NAME,
         "record_id": str(record_id),
         "event_type": "discovered",
         "scraped_at": datetime.now(timezone.utc).isoformat(),
-        "payload_json": json.dumps(record),
+        "payload_json": payload_json,
+        "content_hash": content_hash,  # NEW in v2
     }
 
 

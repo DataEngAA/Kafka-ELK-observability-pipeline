@@ -146,3 +146,53 @@ significant):
   originally drafted.
 - Deliberately did NOT install/use Claude Code for this project — sticking to
   manual, hands-on step-by-step development per user preference.
+
+## 2026-07-19 — Phase 2 complete: Avro + schema registry
+
+**Phase**: Phase 2 — Add Avro + schema registry ✅ DONE
+
+**Done**:
+- `schemas/cpsc_recalls/v1.avsc` — Avro schema for the event envelope. Design
+  decision: envelope fields (source, record_id, event_type, scraped_at) are
+  strongly typed; the CPSC record itself is kept as a JSON string in
+  `payload_json` rather than fully modeled, since CPSC's record shape varies
+  between recall types (documented in the schema's own `doc` field and in
+  Architecture.md).
+- `producer.py` rewritten to use `SerializingProducer` + `AvroSerializer`,
+  publishing against the schema registry (Karapace) instead of raw JSON.
+  Schema auto-registered on first publish — confirmed via
+  `GET /subjects` returning `["recalls-raw-value"]`.
+- `consumer.py` rewritten to use `DeserializingConsumer` + `AvroDeserializer`.
+  Still writes idempotently to Elasticsearch (unchanged doc-ID logic from
+  Phase 1), now expanding `payload_json` back into a nested object before
+  indexing so it stays queryable in Kibana.
+- **Schema evolution demo**: created `schemas/cpsc_recalls/v2.avsc`, adding
+  one new optional field `content_hash` (`["null","string"]`, `default: null`
+  — additive, backward-compatible change). Built a standalone
+  `producer_v2_demo.py` that publishes using v2. Ran it against the SAME,
+  UNMODIFIED consumer.py — confirmed via live logs that all v2 messages
+  were processed with zero errors (`200 OK` on every ES write) despite the
+  consumer never being told about `content_hash`. Verified in Kibana Dev
+  Tools that `content_hash` field exists only on the 20 new v2 documents,
+  and `GET /subjects/recalls-raw-value/versions` shows both `[1, 2]`
+  coexisting.
+
+**Broken / blocked**:
+- None. `confluent-kafka[avro]` needed `librdkafka-dev` installed at the OS
+  level before it would build (pip build error: `fatal error:
+  librdkafka/rdkafka.h: No such file or directory`) — fixed with
+  `sudo apt install -y librdkafka-dev`, documented here so it's not
+  rediscovered from scratch next time.
+
+**Next**:
+- Move to Phase 3: add 1-2 more producers (different public sources), each
+  with its own Kafka topic and Avro schema, proving the multi-topic design
+  holds up with concurrent independent pipelines.
+
+**Decisions made this session**:
+- Payload stored as JSON string within Avro rather than deeply modeled —
+  tradeoff of schema flexibility vs. full type safety, chosen because CPSC's
+  record structure isn't stable enough to justify strict Avro modeling.
+- Schema evolution demo built as a SEPARATE script (`producer_v2_demo.py`)
+  rather than modifying the real producer.py, so the "before/after" comparison
+  stays clean and the main pipeline isn't disrupted by demo-only code.
