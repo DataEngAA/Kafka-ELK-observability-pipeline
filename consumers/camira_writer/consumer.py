@@ -1,13 +1,9 @@
 """
-Phase 2 consumer: reads Avro-serialized events from the recalls-raw Kafka
-topic (deserializing via the schema registry) and writes them to
-Elasticsearch.
-
-Idempotency: the Elasticsearch document ID is a deterministic SHA-256 hash
-of (source + record_id), so re-processing the same message overwrites the
-same document instead of creating a duplicate.
-
-Offsets are committed only AFTER a successful write, per docs/Rules.md.
+Phase 3 consumer: reads Camira fabric change-detection events from Kafka
+and writes them to Elasticsearch. Same idempotent-write pattern as
+consumers/es_writer (deterministic doc ID, commit-after-write) — see that
+file's docstring for the reasoning. Kept as a separate consumer rather than
+a shared generic one for now; see docs/Memory.md decision log.
 """
 
 import hashlib
@@ -25,39 +21,40 @@ from confluent_kafka.serialization import StringDeserializer
 os.makedirs("logs", exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s %(levelname)s [consumer.es_writer] %(message)s",
+    format="%(asctime)s %(levelname)s [consumer.camira_writer] %(message)s",
     handlers=[logging.StreamHandler(), logging.FileHandler("logs/app.log")],
 )
 log = logging.getLogger(__name__)
 
 KAFKA_BOOTSTRAP_SERVERS = "localhost:9092"
-KAFKA_TOPIC = "recalls-raw"
-KAFKA_GROUP_ID = "es-writer-recalls"
+KAFKA_TOPIC = "camira-fabrics-raw"
+KAFKA_GROUP_ID = "es-writer-camira"
 SCHEMA_REGISTRY_URL = "http://localhost:8081"
 
 ELASTICSEARCH_URL = "http://localhost:9200"
-ELASTICSEARCH_INDEX = "recalls-events"
+ELASTICSEARCH_INDEX = "camira-fabric-events"
 
 
-def deterministic_doc_id(source: str, record_id: str) -> str:
-    """Same (source, record_id) always produces the same ES document ID,
-    making writes safe to repeat (idempotent)."""
-    raw = f"{source}:{record_id}"
+def deterministic_doc_id(source: str, record_id: str, event_type: str, content_hash: str) -> str:
+    """Include content_hash in the ID (unlike the CPSC consumer) because for
+    this source, each distinct change IS a distinct event worth keeping —
+    we want a history of changes per product, not one overwritten doc."""
+    raw = f"{source}:{record_id}:{event_type}:{content_hash}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 def write_to_elasticsearch(event: dict) -> bool:
-    doc_id = deterministic_doc_id(event["source"], event["record_id"])
+    doc_id = deterministic_doc_id(
+        event["source"], event["record_id"], event["event_type"], event["content_hash"]
+    )
     url = f"{ELASTICSEARCH_URL}/{ELASTICSEARCH_INDEX}/_doc/{doc_id}"
 
-    # Expand payload_json back into a nested object so it's queryable in ES,
-    # rather than sitting there as an opaque string.
     es_document = dict(event)
     try:
-        es_document["payload"] = json.loads(event["payload_json"])
-        del es_document["payload_json"]
+        es_document["fields"] = json.loads(event["fields_json"])
+        del es_document["fields_json"]
     except (json.JSONDecodeError, TypeError):
-        log.warning("Could not parse payload_json for record_id=%s; storing raw.", event.get("record_id"))
+        log.warning("Could not parse fields_json for record_id=%s; storing raw.", event.get("record_id"))
 
     try:
         response = httpx.put(url, json=es_document, timeout=15.0)
@@ -80,12 +77,12 @@ def main() -> int:
             "key.deserializer": string_deserializer,
             "value.deserializer": avro_deserializer,
             "auto.offset.reset": "earliest",
-            "enable.auto.commit": False,  # we commit manually after a successful write
+            "enable.auto.commit": False,
         }
     )
     consumer.subscribe([KAFKA_TOPIC])
 
-    log.info("Consumer started (Avro mode). Listening on topic '%s'...", KAFKA_TOPIC)
+    log.info("Consumer started. Listening on topic '%s'...", KAFKA_TOPIC)
 
     try:
         while True:
@@ -109,9 +106,8 @@ def main() -> int:
             if success:
                 consumer.commit(msg)
                 log.info(
-                    "Wrote record_id=%s to Elasticsearch (offset %s)",
-                    event.get("record_id"),
-                    msg.offset(),
+                    "Wrote %s event for record_id=%s to Elasticsearch (offset %s)",
+                    event.get("event_type"), event.get("record_id"), msg.offset(),
                 )
             else:
                 log.warning(

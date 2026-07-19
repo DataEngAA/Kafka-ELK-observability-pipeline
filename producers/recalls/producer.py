@@ -11,6 +11,7 @@ for why).
 
 import json
 import logging
+import os
 import sys
 from datetime import datetime, timezone
 
@@ -20,9 +21,11 @@ from confluent_kafka.schema_registry import SchemaRegistryClient
 from confluent_kafka.schema_registry.avro import AvroSerializer
 from confluent_kafka.serialization import StringSerializer
 
+os.makedirs("logs", exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s [producer.recalls] %(message)s",
+    handlers=[logging.StreamHandler(), logging.FileHandler("logs/app.log")],
 )
 log = logging.getLogger(__name__)
 

@@ -196,3 +196,117 @@ significant):
 - Schema evolution demo built as a SEPARATE script (`producer_v2_demo.py`)
   rather than modifying the real producer.py, so the "before/after" comparison
   stays clean and the main pipeline isn't disrupted by demo-only code.
+
+## 2026-07-19 — Phase 3 complete: second source (Camira fabric change-detection)
+
+**Phase**: Phase 3 — Add 1-2 more sources, multi-topic design ✅ DONE (first addition)
+
+**Done**:
+- Added a second, genuinely different ingestion pattern: Camira Fabrics
+  manufacturer site monitoring via change-detection (as opposed to CPSC's
+  simple polling of a structured feed). Ties directly to the user's real
+  scraping experience/work — reused the data-testid-based extraction
+  approach from their existing CamiraMain.py/CamiraOV.py scrapers.
+- New schema: `schemas/camira_fabrics/v1.avsc` — content_hash and
+  previous_hash are first-class fields since change-detection is the point
+  of this source.
+- New producer: `producers/camira_fabrics/producer.py`. Scrapes only the
+  fields worth monitoring (specifications, features, colourway count,
+  download count) — deliberately NOT the whole page, to avoid false
+  positives from ad/session-token noise. Hashes those fields, compares
+  against last known hash stored in a dedicated ES index
+  (`camira-fabric-state`), and only publishes to Kafka if something
+  actually changed. Seeded with 5 real products from the user's own
+  CamiraFabric.json for the demo.
+- New consumer: `consumers/camira_writer/consumer.py` — same idempotent
+  pattern as Phase 1/2's es_writer, writing to `camira-fabric-events`.
+  Doc ID includes content_hash (unlike the CPSC consumer) so each real
+  change gets its own document — a history of changes per product, not
+  just latest-state-overwritten.
+- New Kafka topic: `camira-fabrics-raw` (3 partitions, replication 1).
+- **Verified live, twice**: first run against the real camirafabrics.com
+  site — all 5 products correctly logged as "discovered" (404 on state
+  lookup = never seen before), published, state stored. Second run
+  immediately after — all 5 correctly logged "No change... skipping
+  publish" (200 on state lookup, hash matched) — proving the system stays
+  quiet when nothing changed, which is the actual point of a monitoring
+  pipeline. Confirmed final state in Kibana: `camira-fabric-events` holds
+  5 documents with real scraped specifications, content_hash populated,
+  previous_hash null (first-time discovery).
+
+**Broken / blocked**:
+- None.
+
+**Next**:
+- Phase 3 technically only needs one more source to be "complete" per
+  Phases.md, but Camira alone already proves the multi-topic /
+  multi-pattern goal strongly. Could add a third source later, or move on
+  to Phase 4 (Logstash real grok parsing) — user's call next session.
+
+**Decisions made this session**:
+- Kept camira_writer as a separate consumer script rather than
+  generalizing es_writer into a shared/parametrized consumer. Rationale:
+  the doc-ID strategy differs meaningfully (CPSC overwrites one doc per
+  record; Camira keeps one doc per distinct change), so forcing them into
+  one generic consumer now would add abstraction before it's earned.
+  Worth revisiting as a refactor once a 3rd source exists and the pattern
+  is clearer.
+- Seeded the Camira producer with a hardcoded list of 5 real products
+  rather than reading the full 66-product CamiraFabric.json, to keep demo
+  runtime fast. In a real deployment this would come from a feed/DB.
+
+## 2026-07-19 — Phase 4 complete: Logstash real grok parsing + enrichment
+
+**Phase**: Phase 4 — Logstash integration ✅ DONE
+
+**Done**:
+- All 4 scripts (producer.recalls, consumer.es_writer, producer.camira,
+  consumer.camira_writer) now write to a shared `logs/app.log` file in
+  addition to the console, via a second `logging.FileHandler`.
+- `logstash/pipeline/pipeline.conf` — real pipeline, not bypassed:
+  - `file` input reads `logs/app.log` (mounted into the Logstash container
+    via a new docker-compose volume: `./logs:/usr/share/logstash/app_logs:ro`)
+  - `grok` filter parses the log line format into `log_timestamp`,
+    `log_level`, `component`, `log_message`
+  - second `grok` splits `component` (e.g. "producer.recalls") into
+    `pipeline_role` + `pipeline_source`
+  - `translate` filter enriches each line with `source_owner` — a static
+    lookup of which pipeline/team owns that source (e.g. "recalls" →
+    "CPSC Recalls Pipeline"). This is the enrichment step called for in
+    Phases.md — genuinely joins in data not present in the original log line.
+  - `date` filter sets `@timestamp` from the log's own timestamp
+  - output goes to a new Elasticsearch index: `pipeline-logs-%{+YYYY.MM.dd}`
+- Removed the obsolete `version:` line from docker-compose.yml (was
+  producing a warning on every run).
+- **Verified live**: ran the CPSC producer, confirmed `logs/app.log` was
+  written, restarted Logstash to pick up the new pipeline config and volume
+  mount, confirmed `pipeline-logs-2026.07.19` index created automatically
+  with 22 documents. Queried it directly and confirmed every enriched field
+  present and correct: log_level, component, pipeline_role, pipeline_source,
+  source_owner, log_message, @timestamp.
+
+**Broken / blocked**:
+- None. Had to `docker compose up -d --force-recreate logstash` to pick up
+  the new volume mount + pipeline config, since a plain restart doesn't
+  reload docker-compose.yml changes — noting this here so it's not
+  re-discovered from scratch next time.
+
+**Next**:
+- Phase 5: Kubernetes migration — containerize the producer/consumer
+  scripts themselves (they currently run as plain Python processes in a
+  venv on the EC2 host), write K8s manifests (CronJobs for producers,
+  Deployments for consumers), deploy to a real cluster.
+- Also still pending from earlier: push the repo to GitHub (deferred by
+  user, not yet done as of this entry).
+
+**Decisions made this session**:
+- Used a single shared `logs/app.log` file for all 4 scripts rather than
+  one log file per script. Simpler for Logstash to tail one file input,
+  and the `component` field already disambiguates which script wrote each
+  line — a per-script file would add config complexity without adding
+  real value at this scale.
+- `sincedb_path => "/dev/null"` in the Logstash file input — means
+  Logstash re-reads the whole log file from the start on every container
+  restart, rather than remembering its position. Documented in the config
+  itself as a deliberate demo-only simplification, not a production
+  pattern (a real deployment would use a persistent sincedb).

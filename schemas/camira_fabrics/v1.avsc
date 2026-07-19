@@ -1,0 +1,15 @@
+{
+  "type": "record",
+  "name": "FabricChangeEvent",
+  "namespace": "com.observabilitypipeline.camira",
+  "doc": "Envelope for a fabric-page change-detection event. Unlike the CPSC source (which gets told about new records via a feed), this source has to detect change itself by hashing the fields that matter and comparing against the last known hash. event_type is 'discovered' the first time a product is seen, 'updated' when its content_hash differs from the previously stored one.",
+  "fields": [
+    { "name": "source", "type": "string", "doc": "Always 'camira_fabrics'" },
+    { "name": "record_id", "type": "string", "doc": "Camira's own Product ID, e.g. CAM001" },
+    { "name": "event_type", "type": "string", "doc": "discovered | updated" },
+    { "name": "scraped_at", "type": "string", "doc": "ISO-8601 UTC timestamp of this scrape" },
+    { "name": "content_hash", "type": "string", "doc": "SHA-256 of the normalized fields we monitor (specifications, features, colourway count, download count) — used to detect real changes and ignore page noise" },
+    { "name": "previous_hash", "type": ["null", "string"], "default": null, "doc": "The hash we had on file before this event, null if this is the first time we've seen this product" },
+    { "name": "fields_json", "type": "string", "doc": "JSON-encoded snapshot of the monitored fields at this point in time" }
+  ]
+}
