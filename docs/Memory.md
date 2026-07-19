@@ -310,3 +310,75 @@ significant):
   restart, rather than remembering its position. Documented in the config
   itself as a deliberate demo-only simplification, not a production
   pattern (a real deployment would use a persistent sincedb).
+
+## 2026-07-20 — Phase 5 complete: Kubernetes migration
+
+**Phase**: Phase 5 — Kubernetes migration ✅ DONE
+
+**Done**:
+- Resized EC2 from t3.large (8GB) to t3.xlarge (16GB) before starting —
+  running a full kind cluster alongside the existing 5-service docker-compose
+  stack needed real headroom. Private IP stayed stable across the resize
+  (172.31.43.186), so no ConfigMap changes were needed for that.
+- Refactored all 4 scripts (producer.recalls, consumer.es_writer,
+  producer.camira, consumer.camira_writer) to read Kafka/Schema
+  Registry/Elasticsearch endpoints from environment variables
+  (`os.environ.get(..., "localhost:...")` fallback) instead of hardcoded
+  localhost URLs — this was a Rules.md requirement from day one that hadn't
+  been done yet; Phase 5 was the forcing function.
+- Wrote a Dockerfile per script (all install librdkafka-dev, same fix
+  needed on the EC2 host directly back in Phase 2).
+- Installed kubectl + kind on EC2 (previously only installed locally).
+- Created a kind cluster (`observability-pipeline`) on EC2.
+- Wrote K8s manifests: a namespace, a ConfigMap pointing pods at the
+  docker-compose stack via the EC2 host's private IP (Kafka/ES/Schema
+  Registry are treated as external managed infra, not deployed inside the
+  cluster — a legitimate, common real-world pattern), 2 CronJobs (recalls
+  every 15 min, Camira every 30 min — less frequent since it hits a real
+  external site), and 2 Deployments for the long-running consumers.
+- Built all 4 images, loaded them into kind via `kind load docker-image`
+  (necessary because kind runs its own isolated container runtime — images
+  built on the host Docker aren't automatically visible to it).
+- **Real bug hit and fixed**: consumers initially failed to connect with
+  repeated `Connection refused` on `localhost:9092` — root cause was
+  Kafka's `KAFKA_ADVERTISED_LISTENERS` still advertising `localhost:9092`
+  for the host listener. Pods could reach the initial bootstrap port fine,
+  but Kafka then told them to reconnect to `localhost` for actual
+  produce/consume operations — which inside a pod means the pod itself, not
+  the EC2 host. Fixed by changing the advertised listener to the EC2
+  private IP (`172.31.43.186:9092`). Hit a follow-up typo (dropped the
+  port number during a manual edit) that crashed Kafka outright — caught
+  via `docker logs kafka` showing an `IllegalArgumentException` on
+  startup, fixed with a precise `sed` replacement instead of manual editing.
+- **Verified live**: both CronJobs fired on their own schedule
+  automatically (not just manually triggered) and completed successfully;
+  manually-triggered test jobs also completed; both consumer Deployments
+  stayed `1/1 Running` throughout and successfully wrote real data to
+  Elasticsearch (confirmed via `200 OK` responses in logs); old ReplicaSets
+  correctly scaled to 0 after rollout restarts, demonstrating K8s's
+  self-managing behavior.
+
+**Broken / blocked**:
+- See the advertised-listener bug above — fully resolved, documented here
+  so the reasoning isn't lost. This is a genuinely common real-world Kafka
+  gotcha, worth remembering: advertised.listeners must resolve to an
+  address reachable by whichever client is connecting, and different
+  client types (same-host processes vs. same-docker-network containers vs.
+  external K8s pods) may need different listener configs entirely in a
+  more complex setup.
+
+**Next**:
+- Phase 6: KEDA autoscaling — scale consumer pods based on Kafka consumer
+  lag rather than CPU, proven with a load-test burst script.
+
+**Decisions made this session**:
+- Kept Kafka/Elasticsearch/Schema Registry/Kibana/Logstash running via
+  docker-compose on the EC2 host rather than also moving them into the kind
+  cluster. Rationale: this mirrors a common real-world pattern (managed/
+  external data infra, separate from the application's own K8s workloads)
+  and keeps Phase 5's scope focused on containerizing OUR code, not
+  re-platforming infrastructure that already works.
+- Resized the EC2 instance proactively before hitting OOM issues, rather
+  than waiting for problems — 16GB gives real headroom for the full stack
+  (5 docker-compose services + a kind cluster + app pods) running
+  simultaneously.

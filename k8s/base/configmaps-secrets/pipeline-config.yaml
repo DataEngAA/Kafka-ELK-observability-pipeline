@@ -1,0 +1,19 @@
+# Kafka/Schema Registry/Elasticsearch run as docker-compose services directly
+# on the EC2 host (see docker-compose.yml at repo root) — they are treated as
+# "external managed infrastructure" here, not deployed inside this cluster.
+# Pods reach them via the EC2 instance's private IP, since docker-compose
+# publishes these ports on 0.0.0.0 and containers can reach the host machine
+# at its normal network address.
+#
+# NOTE: 172.31.43.186 is this EC2 instance's private IP. AWS keeps the
+# private IP stable across stop/start (unlike the public IP), so this
+# shouldn't need updating unless the instance is terminated and relaunched.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pipeline-config
+  namespace: observability-pipeline
+data:
+  KAFKA_BOOTSTRAP_SERVERS: "172.31.43.186:9092"
+  SCHEMA_REGISTRY_URL: "http://172.31.43.186:8081"
+  ELASTICSEARCH_URL: "http://172.31.43.186:9200"

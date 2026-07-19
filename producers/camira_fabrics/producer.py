@@ -45,13 +45,13 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-KAFKA_BOOTSTRAP_SERVERS = "localhost:9092"
-KAFKA_TOPIC = "camira-fabrics-raw"
-SCHEMA_REGISTRY_URL = "http://localhost:8081"
-SCHEMA_PATH = "schemas/camira_fabrics/v1.avsc"
+KAFKA_BOOTSTRAP_SERVERS = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+KAFKA_TOPIC = os.environ.get("KAFKA_TOPIC", "camira-fabrics-raw")
+SCHEMA_REGISTRY_URL = os.environ.get("SCHEMA_REGISTRY_URL", "http://localhost:8081")
+SCHEMA_PATH = os.environ.get("SCHEMA_PATH", "schemas/camira_fabrics/v1.avsc")
 
-ELASTICSEARCH_URL = "http://localhost:9200"
-STATE_INDEX = "camira-fabric-state"
+ELASTICSEARCH_URL = os.environ.get("ELASTICSEARCH_URL", "http://localhost:9200")
+STATE_INDEX = os.environ.get("STATE_INDEX", "camira-fabric-state")
 
 SOURCE_NAME = "camira_fabrics"
 

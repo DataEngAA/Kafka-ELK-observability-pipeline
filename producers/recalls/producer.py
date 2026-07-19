@@ -29,10 +29,10 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-KAFKA_BOOTSTRAP_SERVERS = "localhost:9092"
-KAFKA_TOPIC = "recalls-raw"
-SCHEMA_REGISTRY_URL = "http://localhost:8081"
-SCHEMA_PATH = "schemas/cpsc_recalls/v1.avsc"
+KAFKA_BOOTSTRAP_SERVERS = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+KAFKA_TOPIC = os.environ.get("KAFKA_TOPIC", "recalls-raw")
+SCHEMA_REGISTRY_URL = os.environ.get("SCHEMA_REGISTRY_URL", "http://localhost:8081")
+SCHEMA_PATH = os.environ.get("SCHEMA_PATH", "schemas/cpsc_recalls/v1.avsc")
 
 CPSC_API_URL = "https://www.saferproducts.gov/RestWebServices/Recall"
 SOURCE_NAME = "cpsc_recalls"

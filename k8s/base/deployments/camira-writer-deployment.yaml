@@ -1,0 +1,29 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: camira-writer-consumer
+  namespace: observability-pipeline
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: camira-writer-consumer
+  template:
+    metadata:
+      labels:
+        app: camira-writer-consumer
+    spec:
+      containers:
+        - name: camira-writer-consumer
+          image: camira-writer-consumer:latest
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: pipeline-config
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "300m"
+              memory: "256Mi"

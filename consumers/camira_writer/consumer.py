@@ -26,13 +26,13 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-KAFKA_BOOTSTRAP_SERVERS = "localhost:9092"
-KAFKA_TOPIC = "camira-fabrics-raw"
-KAFKA_GROUP_ID = "es-writer-camira"
-SCHEMA_REGISTRY_URL = "http://localhost:8081"
+KAFKA_BOOTSTRAP_SERVERS = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+KAFKA_TOPIC = os.environ.get("KAFKA_TOPIC", "camira-fabrics-raw")
+KAFKA_GROUP_ID = os.environ.get("KAFKA_GROUP_ID", "es-writer-camira")
+SCHEMA_REGISTRY_URL = os.environ.get("SCHEMA_REGISTRY_URL", "http://localhost:8081")
 
-ELASTICSEARCH_URL = "http://localhost:9200"
-ELASTICSEARCH_INDEX = "camira-fabric-events"
+ELASTICSEARCH_URL = os.environ.get("ELASTICSEARCH_URL", "http://localhost:9200")
+ELASTICSEARCH_INDEX = os.environ.get("ELASTICSEARCH_INDEX", "camira-fabric-events")
 
 
 def deterministic_doc_id(source: str, record_id: str, event_type: str, content_hash: str) -> str:
