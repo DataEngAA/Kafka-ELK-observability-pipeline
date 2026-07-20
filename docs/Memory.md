@@ -427,3 +427,85 @@ significant):
   behaves correctly across real operational events (restarts, timing
   races, transient external failures), which is exactly the kind of
   resilience story worth mentioning in an interview.
+
+## 2026-07-20 — README added, repo cleanup
+
+**Phase**: Between Phase 5 and Phase 6 — documentation/polish work
+
+**Done**:
+- Wrote a full `README.md` for the repo root (previously missing) —
+  problem statement, text-based architecture diagram, tech stack, a
+  "why these choices" section covering the real design tradeoffs made
+  (idempotent consumers over exactly-once, payload-as-JSON-string in Avro,
+  field-level hashing for change detection, Kafka/ES kept outside the K8s
+  cluster), a section on the real Kafka advertised-listener bug hit and
+  fixed during Phase 5, setup instructions, and a phase-status table.
+- Removed all em dashes from the README per user preference — replaced
+  with commas, colons, or parentheses depending on context.
+- Pushed via **GitHub Desktop** from the local Windows/WSL copy, not the
+  EC2 terminal — first time pushing from local instead of EC2 for this
+  project.
+
+**Broken / blocked**:
+- None. Worth noting: since this push came from local rather than EC2,
+  local may now be one commit ahead of EC2's repo. Next EC2 session should
+  run `git pull` (now that the GitHub remote exists, this is simpler than
+  the earlier rsync-based sync method used before GitHub was set up).
+
+**Next**:
+- On next EC2 session: `git pull` to sync the README commit down.
+- Continue into Phase 6 (KEDA autoscaling) or Phase 7 (dashboards &
+  alerting) — user's choice, not yet decided as of this entry.
+
+**Decisions made this session**:
+- Confirmed the golden rule going forward: all git add/commit/push
+  operations should generally happen from EC2 to avoid history divergence,
+  EXCEPT for quick doc-only changes like this README, which are low-risk
+  to push from local via GitHub Desktop. Any such local push should be
+  followed by a `git pull` on EC2 before the next round of EC2-side commits,
+  to keep both in sync.
+
+## 2026-07-20 (session 2) — EC2 restart recovery verified
+
+**Phase**: Operational verification, between Phase 5 and Phase 6
+
+**Done**:
+- Restarted EC2 after a stop (new public IP each time; private IP stayed
+  stable at 172.31.43.186 as expected). Brought docker-compose stack back
+  up cleanly (`docker compose up -d`) — all 5 services returned healthy.
+- Confirmed the `kind` cluster and all K8s resources survived the EC2
+  stop/start intact — no need to recreate the cluster or redeploy manifests.
+- Confirmed both CronJobs had kept firing on schedule automatically while
+  the instance was stopped and after it restarted (saw completed Jobs from
+  scheduled runs, not just manually-triggered ones) — real evidence the
+  scheduling is durable, not just a one-time demo behavior.
+- Consumer pods initially showed connection failures to Kafka right after
+  restart (`Connection refused` on 172.31.43.186:9092) — expected, since
+  the pods came up before Kafka had fully finished its own KRaft
+  startup/log-loading. Not a config bug this time, just a timing race.
+  Fixed by restarting the consumer deployments once Kafka was confirmed
+  healthy (`nc -zv` to check the port, then `kubectl rollout restart`).
+- Hit one genuine external-source flakiness: a manually-triggered recalls
+  producer job failed with "The read operation timed out" against the
+  live CPSC API. This is NOT a bug — it's the error handling built in
+  since Phase 1 working correctly: the job logged the failure clearly,
+  published nothing, and exited cleanly rather than crashing or silently
+  losing data. A retry succeeded immediately (20/20 published, all written
+  to Elasticsearch).
+
+**Broken / blocked**:
+- None outstanding. Everything above was either expected behavior (startup
+  race) or handled gracefully by existing error handling (API timeout).
+
+**Next**:
+- README.md was added and pushed via GitHub Desktop from local in a
+  previous mini-session — need to `git pull` on EC2 to sync it down before
+  the next commit (not yet done as of this entry).
+- Continue into Phase 6 (KEDA autoscaling) or Phase 7 (dashboards) next.
+
+**Decisions made this session**:
+- None new — this was verification/recovery work, not new development.
+  Worth keeping as a record though: it's genuine evidence the system
+  behaves correctly across real operational events (restarts, timing
+  races, transient external failures), which is exactly the kind of
+  resilience story worth mentioning in an interview.
