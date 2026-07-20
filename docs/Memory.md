@@ -509,3 +509,94 @@ significant):
   behaves correctly across real operational events (restarts, timing
   races, transient external failures), which is exactly the kind of
   resilience story worth mentioning in an interview.
+
+## 2026-07-20/21 (session 3) — Phase 6: KEDA autoscaling
+
+**Phase**: ✅ Phase 6 — KEDA autoscaling, complete
+
+**Done**:
+- Installed KEDA 2.20.1 via Helm. Hit an immediate compatibility warning:
+  KEDA 2.20 is tested on Kubernetes 1.33+, but the `kind` cluster was
+  still on 1.30 (from Phase 0). Decided to upgrade rather than proceed
+  with the gap — see decisions below.
+- Discovered along the way that `k8s/overlays/prod` and `k8s/overlays/dev`
+  are empty — despite the base/overlays folder layout suggesting Kustomize,
+  there's no `kustomization.yaml` anywhere in the tree. Deployment has
+  actually always been plain `kubectl apply -f` against `k8s/base/`
+  directly. Overlays were scaffolded early with intent, never built out.
+  Not fixing now — just documenting so it's not mistaken for a bug later.
+- Upgraded `kind` from v0.23.0 to v0.29.0 and recreated the cluster on
+  node image `kindest/node:v1.33.1`. Deliberately picked v0.29.0 over the
+  latest available (v0.32.0, which defaults to Kubernetes 1.36) — v0.29.0
+  lands exactly on the 1.33 floor KEDA needs without pulling in unrelated
+  breaking changes (kubeadm v1beta4, Envoy replacing HAProxy for LB, etc).
+- **Gotcha**: cluster recreation wipes kind's node-local Docker image
+  cache. Both consumer Deployments and one CronJob came up in
+  `ImagePullBackOff`/`ErrImagePull` immediately after. Images were still
+  in the host's Docker cache though, so fixed with `kind load docker-image`
+  for all four locally-built images (`camira-writer-consumer`,
+  `es-writer-consumer`, `camira-producer`, `recalls-producer`), then
+  `kubectl rollout restart` on the two Deployments. Worth remembering for
+  any future cluster recreation — this isn't a one-time fluke.
+- Tracked down the actual Kafka topic and consumer group names from the
+  consumer source (not present in the `pipeline-config` ConfigMap, so
+  pulled from `os.environ.get(..., default)` calls directly):
+  - `camira-writer-consumer` → topic `camira-fabrics-raw`, group `es-writer-camira`
+  - `es-writer-consumer` → topic `recalls-raw`, group `es-writer-recalls`
+- Wrote and applied `ScaledObject` manifests for both consumers
+  (`k8s/base/keda-scaledobjects/`): `minReplicaCount: 0`,
+  `maxReplicaCount: 5`, `pollingInterval: 15`, `cooldownPeriod: 60`,
+  `lagThreshold: "10"`, Kafka trigger pointed at the private-IP bootstrap
+  address from Phase 5.
+- Verified KEDA creates and drives an HPA per ScaledObject automatically
+  (`keda-hpa-<name>`) — confirmed this is a real mechanism, not just
+  config that looks right, by watching `kubectl get events` show
+  `SuccessfulRescale ... external metric s0-kafka-recalls-raw ... above
+  target` during the live test below.
+- **Real end-to-end test**: manually triggered `recalls-producer`
+  (20 records). KEDA detected the resulting lag and scaled
+  `es-writer-consumer` from 0 → 2 replicas — the math checked out exactly
+  (20 lag ÷ lagThreshold 10 = 2). Both consumers processed the batch,
+  lag cleared, and after the 60s cooldown KEDA scaled back to 0.
+- **Bug found and fixed**: on scale-down, both consumer pods went
+  `Terminating` → `Error` instead of exiting cleanly. Root cause (confirmed
+  via `kubectl get events` showing a clean Kubernetes-side
+  `Killing`/`SuccessfulDelete` with no Kubernetes-level failure, plus a
+  source grep): both consumers only caught `KeyboardInterrupt` (SIGINT),
+  never `SIGTERM` — which is what Kubernetes actually sends on pod
+  termination. With no handler registered, Python's default SIGTERM
+  disposition killed the process before the existing
+  `finally: consumer.close()` block could run, surfacing as a non-zero
+  exit. Fixed in both `consumers/es_writer/consumer.py` and
+  `consumers/camira_writer/consumer.py`: added a `signal.signal(SIGTERM,
+  ...)` handler that raises a `GracefulShutdown` exception, caught
+  alongside `KeyboardInterrupt`, so the existing cleanup path now runs on
+  real pod termination too. Rebuilt both images, reloaded into kind,
+  redeployed, and re-ran the exact same test — pods now end in
+  `Completed` as expected.
+- Committed and pushed from EC2 (commit `a349c3d`): both `ScaledObject`
+  manifests plus the SIGTERM fix in both consumers, 4 files.
+
+**Broken / blocked**:
+- None outstanding. The SIGTERM bug was found and fixed within this
+  session, verified with a second live test before committing.
+
+**Next**:
+- Update README's "why these choices" / bug-story section with the
+  SIGTERM fix and the deliberate kind v0.29.0 version pick, alongside the
+  existing Phase 5 advertised-listener story.
+- Continue into Phase 7 (dashboards & alerting) or Phase 8 (CI/CD) —
+  user's choice, not yet decided as of this entry.
+
+**Decisions made this session**:
+- Upgraded the kind cluster to Kubernetes 1.33 rather than proceeding
+  with KEDA's unsupported-version warning on 1.30. Reasoning: the upgrade
+  was still cheap at this point (few CronJobs/Deployments, no accumulated
+  state), and that gap only grows more expensive to close as Phase 7/8
+  add more surface area on top of the cluster.
+- Picked `minReplicaCount: 0` (true scale-to-zero) over `1` for both
+  ScaledObjects. This is the capability that actually distinguishes KEDA
+  from a plain Kubernetes HPA (which can't scale below 1), and it fits
+  the pipeline's real traffic shape — CronJob-driven batches, not a
+  continuous stream needing an always-warm consumer. Cold-start latency
+  on scale-up is a non-issue at this traffic volume.
