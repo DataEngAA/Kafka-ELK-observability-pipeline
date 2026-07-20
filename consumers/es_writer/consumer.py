@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import sys
+import signal
 
 import httpx
 from confluent_kafka import DeserializingConsumer, KafkaError
@@ -37,6 +38,14 @@ SCHEMA_REGISTRY_URL = os.environ.get("SCHEMA_REGISTRY_URL", "http://localhost:80
 
 ELASTICSEARCH_URL = os.environ.get("ELASTICSEARCH_URL", "http://localhost:9200")
 ELASTICSEARCH_INDEX = os.environ.get("ELASTICSEARCH_INDEX", "recalls-events")
+
+
+class GracefulShutdown(Exception):
+    pass
+
+
+def _handle_sigterm(signum, frame):
+    raise GracefulShutdown()
 
 
 def deterministic_doc_id(source: str, record_id: str) -> str:
@@ -84,6 +93,7 @@ def main() -> int:
         }
     )
     consumer.subscribe([KAFKA_TOPIC])
+    signal.signal(signal.SIGTERM, _handle_sigterm)
 
     log.info("Consumer started (Avro mode). Listening on topic '%s'...", KAFKA_TOPIC)
 
@@ -119,7 +129,7 @@ def main() -> int:
                     event.get("record_id"),
                 )
 
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, GracefulShutdown):
         log.info("Shutting down consumer...")
     finally:
         consumer.close()

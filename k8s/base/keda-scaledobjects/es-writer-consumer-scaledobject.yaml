@@ -1,0 +1,20 @@
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: es-writer-consumer-scaledobject
+  namespace: observability-pipeline
+spec:
+  scaleTargetRef:
+    name: es-writer-consumer
+  minReplicaCount: 0
+  maxReplicaCount: 5
+  pollingInterval: 15
+  cooldownPeriod: 60
+  triggers:
+  - type: kafka
+    metadata:
+      bootstrapServers: 172.31.43.186:9092
+      consumerGroup: es-writer-recalls
+      topic: recalls-raw
+      lagThreshold: "10"
+      offsetResetPolicy: latest

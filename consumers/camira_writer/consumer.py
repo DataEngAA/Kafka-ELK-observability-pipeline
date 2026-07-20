@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import sys
+import signal
 
 import httpx
 from confluent_kafka import DeserializingConsumer, KafkaError
@@ -65,6 +66,14 @@ def write_to_elasticsearch(event: dict) -> bool:
         return False
 
 
+class GracefulShutdown(Exception):
+    pass
+
+
+def _handle_sigterm(signum, frame):
+    raise GracefulShutdown()
+
+
 def main() -> int:
     schema_registry_client = SchemaRegistryClient({"url": SCHEMA_REGISTRY_URL})
     avro_deserializer = AvroDeserializer(schema_registry_client)
@@ -81,6 +90,7 @@ def main() -> int:
         }
     )
     consumer.subscribe([KAFKA_TOPIC])
+    signal.signal(signal.SIGTERM, _handle_sigterm)
 
     log.info("Consumer started. Listening on topic '%s'...", KAFKA_TOPIC)
 
@@ -115,7 +125,7 @@ def main() -> int:
                     event.get("record_id"),
                 )
 
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, GracefulShutdown):
         log.info("Shutting down consumer...")
     finally:
         consumer.close()
