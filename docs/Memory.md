@@ -600,3 +600,107 @@ significant):
   the pipeline's real traffic shape — CronJob-driven batches, not a
   continuous stream needing an always-warm consumer. Cold-start latency
   on scale-up is a non-issue at this traffic volume.
+
+## 2026-07-21 (session 4) — Phase 7: Dashboards & alerting
+
+**Phase**: ✅ Phase 7 — Dashboards & alerting, complete
+
+**Done**:
+- Confirmed ELK stack version (Elasticsearch 8.14.3) and license tier
+  (Basic) before planning anything, since license tier directly gates
+  which Kibana alerting connectors are usable. On Basic, only `Index`
+  and `Server Log` connector types work — Slack, email, webhook,
+  PagerDuty all require Gold+. Decided upfront to build alerting
+  around the `Index` connector as a deliberate, honest scope choice
+  rather than something to apologize for — alerts get written to a
+  dedicated `pipeline-alerts` index, which is itself queryable/
+  visualizable, not just a workaround.
+- Built 3 Kibana data views: `recalls-events`, `camira-fabric-events`,
+  and `pipeline-logs-*` (wildcard, deliberately, since logs rotate
+  into a new daily index — a non-wildcard pattern would've silently
+  stopped matching new data after the first day).
+- Built the `Observability Pipeline Overview` dashboard, 3 panels:
+  pipeline log volume by level (over time), recalls discovered over
+  time, and recalls by manufacturer country. The country panel
+  replaced an initial attempt at "recalls by hazard type," which
+  turned out to be free-text sentences rather than clean categories
+  (61% fell into "Other," each visible slice was a unique sentence)
+  — caught this by actually looking at the rendered chart rather than
+  assuming the field would behave like a categorical one. Manufacturer
+  country turned out to be a genuinely interesting real finding:
+  80.95% of recalled products in the current dataset trace back to
+  China.
+- Hit a real blocker setting up Connectors/Rules: Kibana's Alerting
+  framework requires `XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY` to
+  be configured, which the docker-compose Kibana service never had
+  (it was only ever configured for ingestion, not alerting). Generated
+  a key with `openssl rand -hex 32`. Initially added it directly to
+  `docker-compose.yml` as a hardcoded value — caught this before
+  pushing to GitHub via a `git diff` review, and fixed it properly:
+  moved the real key into a gitignored `.env` file, changed
+  `docker-compose.yml` to reference it as `${KIBANA_ENCRYPTION_KEY}`
+  so the requirement is documented in version control without the
+  actual secret ever being committed.
+- Created the `pipeline-alerts-index` connector (Index type), verified
+  it independently using Kibana's built-in connector test feature
+  before wiring it into any rule — confirmed a real write reached
+  Elasticsearch.
+- Built 2 alert rules on `pipeline-logs-*`:
+  - **ERROR log detection**: fires when `log_level: ERROR` count is
+    above 0 in a 5-minute window.
+  - **Pipeline silence detection**: fires when total document count is
+    below 1 in a 30-minute window. This window was NOT picked
+    arbitrarily — checked the actual CronJob schedules via `kubectl
+    get cronjob` first (`recalls-producer` every 15min,
+    `camira-producer` every 30min) and set the window comfortably
+    above the tightest one (15min) to leave margin for scheduling
+    jitter and Logstash ingestion lag, so the alert wouldn't falsely
+    fire on normal gaps between scheduled runs.
+  - Both rules write formatted alert documents to `pipeline-alerts`
+    via the Index connector, using Kibana's built-in `context.*`
+    template variables (`context.title`, `context.message`,
+    `context.value`, `context.date`) rather than trying to reach into
+    raw `context.hits` array indexing, which is less reliable across
+    Kibana versions. `context.value` is deliberately stored as a
+    quoted string, not a bare number, since Kibana's rule-action JSON
+    editor validates the template as literal JSON before substitution
+    happens and rejects an unquoted `{{ }}` token.
+- **Verified both rules end-to-end, not just configured them**:
+  manually indexed a fake `ERROR` log document via `curl`, forced the
+  ERROR rule to run immediately ("Run rule"), and confirmed a
+  correctly-formatted alert document landed in `pipeline-alerts`
+  referencing the real match count. Bonus finding: the silence rule
+  had already caught a genuine ~30-minute quiet gap in real
+  `pipeline-logs-*` data earlier in the session — confirmed by
+  comparing timestamps, this fired before the manual test even
+  started, so it's proof of real detection, not just the synthetic
+  test working.
+- Exported all Kibana saved objects (dashboard, both rules, the
+  connector, and the data views) as NDJSON via Stack Management →
+  Saved Objects, transferred from local Windows Downloads to EC2 via
+  `scp`, and committed to the repo under `kibana/saved-objects/` —
+  matching how the rest of this project treats infrastructure as
+  code, rather than leaving the Kibana config to only exist as
+  in-place UI state with no version history.
+
+**Broken / blocked**:
+- None outstanding. The encryption-key secret near-miss was caught
+  and corrected before anything was pushed.
+
+**Next**:
+- Phase 8 (CI/CD) is the last item remaining from the original phase
+  list.
+
+**Decisions made this session**:
+- Built the dashboard and alert rules through the Kibana UI rather
+  than hand-authoring Saved Objects API JSON, then exported the
+  finished result to NDJSON for git tracking. Reasoning: Kibana's
+  saved-object JSON is deeply nested internal serialized state that
+  nobody hand-writes in real practice; building in the UI is both the
+  standard workflow and better resume material ("I built this," not
+  "I had it generated"), while the export step still gets the
+  reproducibility benefit.
+- Scoped alerting delivery around the Basic-license `Index` connector
+  deliberately, rather than treating it as a limitation to work
+  around — framed as a clean, honest, fully self-contained
+  demonstration of the alerting mechanism.
