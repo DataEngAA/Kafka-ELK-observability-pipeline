@@ -382,3 +382,48 @@ significant):
   than waiting for problems — 16GB gives real headroom for the full stack
   (5 docker-compose services + a kind cluster + app pods) running
   simultaneously.
+
+## 2026-07-20 (session 2) — EC2 restart recovery verified
+
+**Phase**: Operational verification, between Phase 5 and Phase 6
+
+**Done**:
+- Restarted EC2 after a stop (new public IP each time; private IP stayed
+  stable at 172.31.43.186 as expected). Brought docker-compose stack back
+  up cleanly (`docker compose up -d`) — all 5 services returned healthy.
+- Confirmed the `kind` cluster and all K8s resources survived the EC2
+  stop/start intact — no need to recreate the cluster or redeploy manifests.
+- Confirmed both CronJobs had kept firing on schedule automatically while
+  the instance was stopped and after it restarted (saw completed Jobs from
+  scheduled runs, not just manually-triggered ones) — real evidence the
+  scheduling is durable, not just a one-time demo behavior.
+- Consumer pods initially showed connection failures to Kafka right after
+  restart (`Connection refused` on 172.31.43.186:9092) — expected, since
+  the pods came up before Kafka had fully finished its own KRaft
+  startup/log-loading. Not a config bug this time, just a timing race.
+  Fixed by restarting the consumer deployments once Kafka was confirmed
+  healthy (`nc -zv` to check the port, then `kubectl rollout restart`).
+- Hit one genuine external-source flakiness: a manually-triggered recalls
+  producer job failed with "The read operation timed out" against the
+  live CPSC API. This is NOT a bug — it's the error handling built in
+  since Phase 1 working correctly: the job logged the failure clearly,
+  published nothing, and exited cleanly rather than crashing or silently
+  losing data. A retry succeeded immediately (20/20 published, all written
+  to Elasticsearch).
+
+**Broken / blocked**:
+- None outstanding. Everything above was either expected behavior (startup
+  race) or handled gracefully by existing error handling (API timeout).
+
+**Next**:
+- README.md was added and pushed via GitHub Desktop from local in a
+  previous mini-session — need to `git pull` on EC2 to sync it down before
+  the next commit (not yet done as of this entry).
+- Continue into Phase 6 (KEDA autoscaling) or Phase 7 (dashboards) next.
+
+**Decisions made this session**:
+- None new — this was verification/recovery work, not new development.
+  Worth keeping as a record though: it's genuine evidence the system
+  behaves correctly across real operational events (restarts, timing
+  races, transient external failures), which is exactly the kind of
+  resilience story worth mentioning in an interview.
