@@ -1,0 +1,53 @@
+name: Build and Deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'consumers/**'
+      - 'producers/**'
+      - 'k8s/**'
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    runs-on: self-hosted
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build consumer images
+        run: |
+          docker build -f consumers/es_writer/Dockerfile -t es-writer-consumer:latest .
+          docker build -f consumers/camira_writer/Dockerfile -t camira-writer-consumer:latest .
+
+      - name: Build producer images
+        run: |
+          docker build -f producers/recalls/Dockerfile -t recalls-producer:latest .
+          docker build -f producers/camira_fabrics/Dockerfile -t camira-producer:latest .
+
+      - name: Load images into kind cluster
+        run: |
+          kind load docker-image es-writer-consumer:latest --name observability-pipeline
+          kind load docker-image camira-writer-consumer:latest --name observability-pipeline
+          kind load docker-image recalls-producer:latest --name observability-pipeline
+          kind load docker-image camira-producer:latest --name observability-pipeline
+
+      - name: Apply Kubernetes manifests
+        run: |
+          kubectl apply -f k8s/base/namespace.yaml
+          kubectl apply -f k8s/base/configmaps-secrets/
+          kubectl apply -f k8s/base/deployments/
+          kubectl apply -f k8s/base/cronjobs/
+          kubectl apply -f k8s/base/keda-scaledobjects/
+
+      - name: Restart long-running consumer deployments
+        run: |
+          # CronJobs pick up the newly-loaded image automatically on their
+          # next scheduled run (imagePullPolicy: IfNotPresent, tag already
+          # local). Deployments are already running from the old image in
+          # memory though, so they need an explicit rollout restart.
+          kubectl rollout restart deployment es-writer-consumer camira-writer-consumer -n observability-pipeline
+          kubectl rollout status deployment es-writer-consumer -n observability-pipeline --timeout=120s
+          kubectl rollout status deployment camira-writer-consumer -n observability-pipeline --timeout=120s
