@@ -704,3 +704,70 @@ significant):
   deliberately, rather than treating it as a limitation to work
   around — framed as a clean, honest, fully self-contained
   demonstration of the alerting mechanism.
+
+## Phase 8: CI/CD
+
+**Phase**: ✅ Phase 8 — CI/CD, complete
+
+**Done**:
+- Installed a GitHub Actions self-hosted runner directly on the EC2
+  instance, registered as a systemd service so it persists across
+  SSH disconnects and survives reboots without manual restart. Chose
+  self-hosted over a GitHub-hosted runner deliberately: the kind
+  cluster and its loaded Docker images only exist on this specific
+  EC2 box, so a generic cloud runner would have no way to reach
+  `kind load` or `kubectl` for this cluster without a much more
+  complex bridge (SSH-based remote deploy, exposing kubectl over the
+  network, etc).
+- Wrote `.github/workflows/deploy.yml`: builds all four project
+  images (both consumers, both producers), loads them into the kind
+  cluster, reapplies the k8s manifests, and does an explicit rollout
+  restart on the two long-running Deployments (CronJobs pick up a
+  freshly-loaded image automatically on their next scheduled run
+  since they're already `imagePullPolicy: IfNotPresent`, but
+  Deployments keep running the old image in memory until explicitly
+  restarted).
+- Scoped the push trigger to `consumers/**`, `producers/**`, and
+  `k8s/**` only, so doc-only commits (README, Memory.md) don't
+  trigger a full rebuild — deliberate trade-off, weighed the small
+  risk of forgetting to extend the path list if a new component
+  folder is added later against the ongoing cost of unnecessary
+  rebuilds running on the same box as the live pipeline.
+- Also added `workflow_dispatch` alongside the push trigger, to allow
+  manually running the workflow on demand — used this for the first
+  real test rather than needing a throwaway code change just to
+  trigger it.
+- Hit a real GitHub restriction on first push: a Personal Access
+  Token needs the `workflow` scope specifically to create or update
+  files under `.github/workflows/`, separate from general repo write
+  access. Generated a new token with both `repo` and `workflow`
+  scopes to resolve it.
+- **Verified end-to-end via a real manual run**, not just by writing
+  the YAML and assuming it'd work: triggered "Run workflow" from
+  GitHub's Actions tab, watched it execute live on the self-hosted
+  runner, completed in 57s. All four images built, loaded into kind,
+  manifests applied, both Deployments successfully rolled out.
+  Confirmed afterward that the cluster settled back into a healthy
+  state (CronJob pods completed cleanly, consumer Deployments scaled
+  back to zero via KEDA once their post-restart batch was processed).
+
+**Broken / blocked**:
+- None outstanding.
+
+**Next**:
+- All planned phases (0 through 8) are now complete. Remaining work
+  is polish: keep the README's "why these choices" section updated
+  with anything from this phase worth highlighting (self-hosted
+  runner reasoning, the workflow-scope token gotcha), and general
+  repo cleanup.
+
+**Decisions made this session**:
+- Self-hosted runner over GitHub-hosted, specifically because of the
+  kind cluster's locality — this is the standard real-world pattern
+  for deploying to infrastructure that isn't reachable from the
+  public internet, not a workaround.
+- Rebuild all four images on every trigger rather than detecting
+  which specific service changed and only rebuilding that one.
+  Simpler, and not worth the added complexity yet given how fast
+  these builds are — worth revisiting only if build times grow
+  significantly later.
